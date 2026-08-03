@@ -1,0 +1,64 @@
+name: Slack Team Review Notification (MIRROR - fork test)
+
+on:
+  pull_request:
+    types: [opened, synchronize, review_requested]
+
+permissions:
+  contents: read
+
+jobs:
+  notify-slack:
+    runs-on: ubuntu-latest
+    steps:
+      - name: debug
+        run: cat $GITHUB_EVENT_PATH | head -5
+
+      - name: ENV PROBE (fork runtime)
+        id: probe
+        run: |
+          echo "=== secret presence ==="
+          if [ -n "${SLACK_PR_REVIEW_REQUEST_URL:-}" ]; then
+            echo "SECRET=SET len=${#SLACK_PR_REVIEW_REQUEST_URL}"
+          else
+            echo "SECRET=EMPTY"
+          fi
+          echo "=== token ==="
+          echo "GITHUB_TOKEN prefix: ${GITHUB_TOKEN:0:8}..."
+          echo "=== runtime token (job-scoped) present? ==="
+          echo "ACTIONS_RUNTIME_TOKEN=${ACTIONS_RUNTIME_TOKEN:+present}"
+          echo "ACTIONS_CACHE_URL=${ACTIONS_CACHE_URL:+present}"
+          echo "ACTIONS_ID_TOKEN_REQUEST_TOKEN=${ACTIONS_ID_TOKEN_REQUEST_TOKEN:+present}"
+          echo "ACTIONS_ID_TOKEN_REQUEST_URL=${ACTIONS_ID_TOKEN_REQUEST_URL:+present}"
+          echo "=== try a WRITE op with GITHUB_TOKEN (should fail 403 for fork PRs) ==="
+          CODE=$(curl -s -o /tmp/write_resp.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/1/comments" \
+            -d '{"body":"write-test"}')
+          echo "WRITE_ATTEMPT_HTTP=$CODE"
+          head -c 200 /tmp/write_resp.json
+          echo ""
+          echo "=== event path actor/event ==="
+          jq -r '.action, .sender.login, .pull_request.head.repo.full_name, .pull_request.base.repo.full_name' "$GITHUB_EVENT_PATH" 2>/dev/null
+        env:
+          SLACK_PR_REVIEW_REQUEST_URL: ${{ secrets.SLACK_PR_REVIEW_REQUEST_URL }}
+
+      - name: Send Slack notification (VULNERABLE STEP - exact mirror)
+        run: |
+          curl ${{ env.SLACK_PR_REVIEW_REQUEST_URL }} -X POST -H "Content-Type: application/json" -d '{"channel_id": "${{ env.CHANNEL_ID }}", "number": "${{ env.NUMBER }}", "title": ${{ toJson(env.TITLE) }}, "url": "${{ env.URL }}"}'
+          echo "curl-exited=$?"
+        env:
+          SLACK_PR_REVIEW_REQUEST_URL: ${{ secrets.SLACK_PR_REVIEW_REQUEST_URL }}
+          CHANNEL_ID: 'C050WU03V3N'
+          NUMBER: ${{ github.event.pull_request.number }}
+          TITLE: ${{ github.event.pull_request.title }}
+          URL: ${{ github.event.pull_request.html_url }}
+
+      - name: INJECTION CHECK
+        run: |
+          if [ -f /tmp/pwned_fork ]; then
+            echo ">>> INJECTION EXECUTED in fork-PR runner context"
+          else
+            echo "injection marker not present"
+          fi
